@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"fmt"	
 	"log"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -24,7 +26,7 @@ func main() {
 		count int
 	}
 
-	results := make(map[string]measurement)
+	results := make(map[string]*measurement)
 	scanner := bufio.NewScanner(file)
 
 	for scanner.Scan() {
@@ -40,16 +42,34 @@ func main() {
 
 		r, ok := results[station]
 		if !ok {
-			r.min = temp
-			r.max = temp
-			r.sum = temp
+			r = &measurement{min: temp, max: temp, sum: temp}
+			results[station] = r
 		} else {
 			r.min = min(r.min, temp)
 			r.max = max(r.max, temp)
 			r.sum += temp
 		}
+
 		r.count++
 	}
+
+	// Sort stuff
+	keys := make([]string, 0, len(results))
+	for k := range results {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	// Output stuff
+	fmt.Print("{")
+	nbKeys := len(keys) - 1
+	for i, k := range keys {
+		result := results[k]
+
+		if i != nbKeys {
+			fmt.Printf("%s=%.1f/%.1f/%.1f, ", k, result.min, result.sum/float64(result.count), result.max) 
+		} else {
+			fmt.Printf("%s=%.1f/%.1f/%.1f}\n", k, result.min, result.sum/float64(result.count), result.max) 
+		}
+	}
 }
-
-
