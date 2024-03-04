@@ -8,7 +8,22 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
+
+type measurement struct {
+	min, max, sum float64
+	count int
+}
+
+type timing struct {
+	start time.Time
+	elapsed time.Duration
+}
+
+func (t timing) GetElapsedMS() time.Duration {
+	return t.elapsed// /time.Millisecond
+}
 
 func main() {
 
@@ -21,14 +36,10 @@ func main() {
 	}
 	defer file.Close()
 
-	type measurement struct {
-		min, max, sum float64
-		count int
-	}
-
 	results := make(map[string]*measurement)
 	scanner := bufio.NewScanner(file)
 
+	scanTiming := timing{start: time.Now()}
 	for scanner.Scan() {
 		line := scanner.Text()
 		splits := strings.Split(line, ";")
@@ -52,15 +63,19 @@ func main() {
 
 		r.count++
 	}
+	scanTiming.elapsed = time.Since(scanTiming.start)
 
 	// Sort stuff
+	sortTiming := timing{start: time.Now()}
 	keys := make([]string, 0, len(results))
 	for k := range results {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	sortTiming.elapsed = time.Since(sortTiming.start)
 
 	// Output stuff
+	printTiming := timing{start: time.Now()}
 	fmt.Print("{")
 	nbKeys := len(keys) - 1
 	for i, k := range keys {
@@ -72,4 +87,10 @@ func main() {
 			fmt.Printf("%s=%.1f/%.1f/%.1f}\n", k, result.min, result.sum/float64(result.count), result.max) 
 		}
 	}
+	printTiming.elapsed = time.Since(printTiming.start)
+
+	fmt.Println()
+	fmt.Printf("Scan elapsed time: %s\n", scanTiming.GetElapsedMS())
+	fmt.Printf("Sort elapsed time: %s\n", sortTiming.GetElapsedMS())
+	fmt.Printf("Print elapsed time: %s\n", printTiming.GetElapsedMS())
 }

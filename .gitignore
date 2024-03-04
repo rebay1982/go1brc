@@ -22,3 +22,8 @@ go.work
 
 # File
 measurements.txt
+measurement-small.txt
+results.txt
+result-small.txt
+main
+
