@@ -2,18 +2,23 @@ package main
 
 import (
 	"bufio"
-	"fmt"	
+	"fmt"
 	"log"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-type measurement struct {
+type stationData struct {
 	min, max, sum float64
 	count int
+}
+type measurement struct	{
+	name string
+	temp float64
 }
 
 type timing struct {
@@ -25,8 +30,69 @@ func (t timing) GetElapsedMS() time.Duration {
 	return t.elapsed// /time.Millisecond
 }
 
-func main() {
 
+// Line parser
+func parseLine(in <- chan string) <- chan measurement {
+	parseOut := make(chan measurement)
+	go func() {
+		for line := range in {
+			splits := strings.Split(line, ";")
+
+			temp, _ := strconv.ParseFloat(splits[1], 64)
+			m := measurement{name: splits[0], temp: temp}
+			parseOut <-m
+		}
+		close(parseOut)
+	}()
+	return parseOut
+}
+
+func workGen(scanner *bufio.Scanner) <- chan string {
+	genOut := make(chan string)
+	go func() {
+		for scanner.Scan() {
+			genOut <- scanner.Text()
+		}
+		close(genOut)
+	}()
+	return genOut
+}
+
+func readFile(file *os.File, numParsers int) map[string]*stationData {
+	// Work generator -- generates lines that need to be processed
+	cWork := workGen(bufio.NewScanner(file))
+
+	// Parsers -- receives lines from the generators and parse the work.
+	cParse := []<-chan measurement{}
+	for i := 0; i < numParsers; i++ {
+		cParse = append(cParse, parseLine(cWork))
+	}
+
+	// Everything is lined up now, all you have to do is implement the merge sink and do line 79 processing on the 
+	// parser output
+	var wg sync.WaitGroup
+	wg.Add(numParsers)
+	for i := 0; i < numParsers; i++ {
+	}
+
+
+	results := make(map[string]*stationData)
+//	r, ok := results[station]
+//	if !ok {
+//		r = &stationData{min: temp, max: temp, sum: temp}
+//		results[station] = r
+//	} else {
+//		r.min = min(r.min, temp)
+//		r.max = max(r.max, temp)
+//		r.sum += temp
+//	}
+//
+//	r.count++
+
+	return results
+}
+
+func main() {
 	filename := "measurements.txt"
 	file, err := os.Open(filename)
 
@@ -36,33 +102,8 @@ func main() {
 	}
 	defer file.Close()
 
-	results := make(map[string]*measurement)
-	scanner := bufio.NewScanner(file)
-
 	scanTiming := timing{start: time.Now()}
-	for scanner.Scan() {
-		line := scanner.Text()
-		splits := strings.Split(line, ";")
-
-		station := splits[0]
-		temp, err := strconv.ParseFloat(splits[1], 64)
-		if err != nil {
-			log.Fatalf("Failed to parse float [%s], err = %v\n", splits[1], err)
-			os.Exit(1)
-		}
-
-		r, ok := results[station]
-		if !ok {
-			r = &measurement{min: temp, max: temp, sum: temp}
-			results[station] = r
-		} else {
-			r.min = min(r.min, temp)
-			r.max = max(r.max, temp)
-			r.sum += temp
-		}
-
-		r.count++
-	}
+	results := readFile(file)
 	scanTiming.elapsed = time.Since(scanTiming.start)
 
 	// Sort stuff
