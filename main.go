@@ -30,9 +30,19 @@ func (t timing) GetElapsedMS() time.Duration {
 	return t.elapsed// /time.Millisecond
 }
 
+func workGen(scanner *bufio.Scanner) <- chan string {
+	genOut := make(chan string)
+	go func() {
+		for scanner.Scan() {
+			genOut <- scanner.Text()
+		}
+		close(genOut)
+	}()
+	return genOut
+}
 
 // Line parser
-func parseLine(in <- chan string) <- chan measurement {
+func measurementParser(in <- chan string) <- chan measurement {
 	parseOut := make(chan measurement)
 	go func() {
 		for line := range in {
@@ -47,48 +57,52 @@ func parseLine(in <- chan string) <- chan measurement {
 	return parseOut
 }
 
-func workGen(scanner *bufio.Scanner) <- chan string {
-	genOut := make(chan string)
-	go func() {
-		for scanner.Scan() {
-			genOut <- scanner.Text()
-		}
-		close(genOut)
-	}()
-	return genOut
-}
-
 func readFile(file *os.File, numParsers int) map[string]*stationData {
 	// Work generator -- generates lines that need to be processed
-	cWork := workGen(bufio.NewScanner(file))
+	genOut := workGen(bufio.NewScanner(file))
 
 	// Parsers -- receives lines from the generators and parse the work.
-	cParse := []<-chan measurement{}
+	parseOut := []<-chan measurement{}
 	for i := 0; i < numParsers; i++ {
-		cParse = append(cParse, parseLine(cWork))
+		parseOut = append(parseOut, measurementParser(genOut))
 	}
 
 	// Everything is lined up now, all you have to do is implement the merge sink and do line 79 processing on the 
 	// parser output
 	var wg sync.WaitGroup
+	aggOutput := make(chan measurement)
+	sink := func(in <- chan measurement)	{
+		for m := range in {
+			aggOutput <- m
+		}
+		wg.Done()
+	}
 	wg.Add(numParsers)
-	for i := 0; i < numParsers; i++ {
+
+	for _, c := range parseOut {
+		go sink(c)	
 	}
 
+	go func() {
+		wg.Wait()
+		close(aggOutput)
+	}()
 
 	results := make(map[string]*stationData)
-//	r, ok := results[station]
-//	if !ok {
-//		r = &stationData{min: temp, max: temp, sum: temp}
-//		results[station] = r
-//	} else {
-//		r.min = min(r.min, temp)
-//		r.max = max(r.max, temp)
-//		r.sum += temp
-//	}
-//
-//	r.count++
-
+	for m := range aggOutput {
+		station := m.name
+		temp := m.temp
+		r, ok := results[station]
+		if !ok {
+			r = &stationData{min: temp, max: temp, sum: temp}
+			results[station] = r
+		} else {
+			r.min = min(r.min, temp)
+			r.max = max(r.max, temp)
+			r.sum += temp
+		}
+		r.count++
+	}
 	return results
 }
 
@@ -103,7 +117,7 @@ func main() {
 	defer file.Close()
 
 	scanTiming := timing{start: time.Now()}
-	results := readFile(file)
+	results := readFile(file, 5)
 	scanTiming.elapsed = time.Since(scanTiming.start)
 
 	// Sort stuff
