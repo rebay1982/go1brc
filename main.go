@@ -2,30 +2,74 @@ package main
 
 import (
 	"bufio"
-	"fmt"	
+	"fmt"
 	"log"
 	"os"
+	"runtime/pprof"
 	"sort"
 	"strconv"
-	"strings"
-	"time"
 )
 
 type measurement struct {
-	min, max, sum float64
-	count int
+	min, max, sum, count int 
 }
 
-type timing struct {
-	start time.Time
-	elapsed time.Duration
+func GetSplit(line string) (string, string) {
+	length := len(line)
+	if line[length - 5] == ';' {
+		return line[:length - 5], line[length - 4:]
+
+	} else if line[length - 4] == ';' {
+		return line[:length - 4], line[length - 3:]
+	}
+
+	return line[:length - 6], line[length - 5:]
 }
 
-func (t timing) GetElapsedMS() time.Duration {
-	return t.elapsed// /time.Millisecond
+func ParseTempStrconv(temp string) int {
+	length := len(temp)
+
+	neg := 1
+	startIndex := 0
+	if temp[0] == '-' {
+			neg =	-1 
+			startIndex++
+	}
+	i, _ := strconv.Atoi(temp[startIndex:length-2])
+	d := temp[length - 1] - '0'
+
+	return (i * 10)*neg + int(d)*neg
+}
+
+func ParseTemp(temp string) int {
+	length := len(temp)
+	sum := 0
+	factor := 1
+	neg := 1
+
+	stopIter := 0
+	if temp[0] == '-' {
+			neg =	-1 
+			stopIter++
+	}
+
+	for i := length - 3; i >= stopIter; i-- {
+		sum += int(temp[i] - '0') * factor
+		factor *= 10
+	}
+	
+	d := temp[length - 1] - '0'
+
+	return (sum * 10)*neg + int(d)*neg
 }
 
 func main() {
+	proffile, err := os.Create("./profile.prof")
+	if err != nil {
+		log.Fatal(err)
+	}
+	pprof.StartCPUProfile(proffile)
+	defer pprof.StopCPUProfile()
 
 	filename := "measurements.txt"
 	file, err := os.Open(filename)
@@ -39,17 +83,12 @@ func main() {
 	results := make(map[string]*measurement)
 	scanner := bufio.NewScanner(file)
 
-	scanTiming := timing{start: time.Now()}
 	for scanner.Scan() {
 		line := scanner.Text()
-		splits := strings.Split(line, ";")
 
-		station := splits[0]
-		temp, err := strconv.ParseFloat(splits[1], 64)
-		if err != nil {
-			log.Fatalf("Failed to parse float [%s], err = %v\n", splits[1], err)
-			os.Exit(1)
-		}
+		station, stationTemp := GetSplit(line)
+		temp := ParseTemp(stationTemp)
+		//temp := ParseTempStrconv(stationTemp)
 
 		r, ok := results[station]
 		if !ok {
@@ -63,34 +102,24 @@ func main() {
 
 		r.count++
 	}
-	scanTiming.elapsed = time.Since(scanTiming.start)
 
 	// Sort stuff
-	sortTiming := timing{start: time.Now()}
 	keys := make([]string, 0, len(results))
 	for k := range results {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	sortTiming.elapsed = time.Since(sortTiming.start)
 
 	// Output stuff
-	printTiming := timing{start: time.Now()}
 	fmt.Print("{")
 	nbKeys := len(keys) - 1
 	for i, k := range keys {
 		result := results[k]
 
 		if i != nbKeys {
-			fmt.Printf("%s=%.1f/%.1f/%.1f, ", k, result.min, result.sum/float64(result.count), result.max) 
+			fmt.Printf("%s=%.1f/%.1f/%.1f, ", k, float64(result.min)/10, float64(result.sum)/float64(result.count)/10, float64(result.max)/10) 
 		} else {
-			fmt.Printf("%s=%.1f/%.1f/%.1f}\n", k, result.min, result.sum/float64(result.count), result.max) 
+			fmt.Printf("%s=%.1f/%.1f/%.1f}\n", k, float64(result.min)/10, float64(result.sum)/float64(result.count)/10, float64(result.max)/10) 
 		}
 	}
-	printTiming.elapsed = time.Since(printTiming.start)
-
-	fmt.Println()
-	fmt.Printf("Scan elapsed time: %s\n", scanTiming.GetElapsedMS())
-	fmt.Printf("Sort elapsed time: %s\n", sortTiming.GetElapsedMS())
-	fmt.Printf("Print elapsed time: %s\n", printTiming.GetElapsedMS())
 }
