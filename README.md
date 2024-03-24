@@ -101,3 +101,21 @@ An other issue we can see from Iteration 1's flame graph is the considerable tim
 will accentuate the use of hashing.
 
 We will attack this in a future iteration.
+
+
+## Iteration 4 (it4)
+Attaching the hashing problem, a basic hash table structure was created using a non cryptographic hashing fucntion:
+[FNV-1a](https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function).
+
+This provided to be faster and a useful optimization, bringing the time down to a little less than 42seconds.
+```
+real    0m41.774s
+user    0m41.698s
+sys     0m2.447s
+```
+
+Here is the flame graph associated with this iteration:
+![Iteration 4 flame graph](/profiling/it4.svg)
+
+We can observe that hashing the value twice for the get and then the "Add" is costly and we should look to refactor the
+code to reduce the amount of hashing.
