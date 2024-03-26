@@ -119,3 +119,7 @@ Here is the flame graph associated with this iteration:
 
 We can observe that hashing the value twice for the get and then the "Add" is costly and we should look to refactor the
 code to reduce the amount of hashing.
+
+A second iteration was run while hashing the string only once and to my surprise didn't bring any time improvement. We
+can see this on the flame graph below:
+![Iteration 4-1 flame graph](/profiling/it4-1.svg)

@@ -42,8 +42,7 @@ func NewHashMap() *HashMap {
 	return &HashMap{entries: make([]HashEntry, hashSize)}
 }
 
-func (m *HashMap) Add(key string, measurement *measurement) *HashEntry {
-	hash := Hash(key) 
+func (m *HashMap) Add(hash uint64, key string, measurement *measurement) *HashEntry {
 	entry := &HashEntry{
 		key: []byte(key),
 		measurement: measurement,
@@ -53,8 +52,8 @@ func (m *HashMap) Add(key string, measurement *measurement) *HashEntry {
 	return entry
 }
 
-func (m *HashMap) Get(key string) *HashEntry {
-	return &m.entries[Hash(key) % uint64(hashSize)]
+func (m *HashMap) Get(hash uint64) *HashEntry {
+	return &m.entries[hash % uint64(hashSize)]
 }
 
 func GetSplit(line string) (string, string) {
@@ -117,11 +116,12 @@ func main() {
 		line := scanner.Text()
 
 		station, stationTemp := GetSplit(line)
+		stationHash := Hash(station)
 		temp := ParseTemp(stationTemp)
 
-		e := results.Get(station)
+		e := results.Get(stationHash)
 		if e.measurement == nil {
-			e = results.Add(station, &measurement{min: temp, max: temp, sum: temp})
+			e = results.Add(stationHash, station, &measurement{min: temp, max: temp, sum: temp})
 			stations = append(stations, station)
 		} else {
 			e.measurement.min = min(e.measurement.min, temp)
@@ -138,7 +138,7 @@ func main() {
 	fmt.Print("{")
 	nbKeys := len(stations) - 1
 	for i, k := range stations {
-		e := results.Get(k)
+		e := results.Get(Hash(k))
 
 		if i != nbKeys {
 			fmt.Printf("%s=%.1f/%.1f/%.1f, ", k, float64(e.measurement.min)/10, float64(e.measurement.sum)/float64(e.measurement.count)/10, float64(e.measurement.max)/10) 
