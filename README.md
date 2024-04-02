@@ -104,7 +104,7 @@ We will attack this in a future iteration.
 
 
 ## Iteration 4 (it4)
-Attaching the hashing problem, a basic hash table structure was created using a non cryptographic hashing fucntion:
+Attacking the hashing problem, a basic hash table structure was created using a non cryptographic hashing fucntion:
 [FNV-1a](https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function).
 
 This provided to be faster and a useful optimization, bringing the time down to a little less than 42seconds.
@@ -123,3 +123,9 @@ code to reduce the amount of hashing.
 A second iteration was run while hashing the string only once and to my surprise didn't bring any time improvement. We
 can see this on the flame graph below:
 ![Iteration 4-1 flame graph](/profiling/it4-1.svg)
+
+## Iteration 5 (it5)
+One last piece I'm interested in optimizing is the reading of the file. We're reading the file line by line and there is
+probably a better way to do this.
+
+

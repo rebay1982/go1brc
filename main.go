@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"io"
 	"os"
 	"runtime/pprof"
 	"sort"
@@ -107,11 +108,37 @@ func main() {
 	}
 	defer file.Close()
 
+	// Unfortunate but needed for sorting later.
 	results := NewHashMap()
 	scanner := bufio.NewScanner(file)
-
-	// Unfortunate but needed for sorting later.
 	stations := make([]string, 0, 500)
+
+
+
+/*
+	Pseudo code:
+
+	Read file into buffer.
+	Go over chars in buffer and split on \n
+	When split, cut a new string from previously cut index to current index.
+	Process this new line
+	Do this again
+
+	If buffer is at the end, move data to top of buffer and read more into it again
+	Rince and repeat
+*/
+
+	buf := make([]byte, 0, 4096)
+	nbLines, err := file.Read(buf)
+	for _, char := range buf[:nbLines] {
+		if char == '\n' {
+			stations = append(stations, string(buf[:nbLines]))
+
+		} else {
+
+		}
+	}
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
