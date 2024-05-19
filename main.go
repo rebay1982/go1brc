@@ -7,79 +7,176 @@ import (
 	"runtime/pprof"
 	"sort"
 	"strings"
+	"sync"
 )
 
 const (
-	hashOffset = 14695981039346656037
-	hashPrime  = 1099511628211
-	hashSize   = 1 << 17
+	hashOffset        = 14695981039346656037
+	hashPrime         = 1099511628211
+	hashSize          = 1 << 17
+	chunkSize         = 1
+	chunkChannelSize  = 1024
+	resultChannelSize = 1024
+	workerPoolSize    = 12
+	filename          = "measurements.txt"
+	tmpSliceSize      = 80000
 )
 
 type measurement struct {
 	min, max, sum, count int
 }
 
-type HashMap struct {
-	entries []*HashEntry
+type tempReading struct {
+	hash    uint64
+	station string
+	temp    int
 }
 
-func NewHashMap() *HashMap {
-	return &HashMap{entries: make([]*HashEntry, hashSize)}
+// chunkProcessor This is the chunk processing function, which is essentially our worker from the worker pool.
+func chunkWorker(wg *sync.WaitGroup, chunks <-chan []byte, results chan<- []tempReading) {
+	defer wg.Done()
+
+	for chunk := range chunks {
+		// 80000 because the %age of chunks that have more than 80k lines in them is less than 10%.
+		//   This is a compromise between always allocating way too much memory and requiring garbage collection vs spending
+		//	 time increasing slice capacity.
+		tmpSlice := make([]tempReading, 0, tmpSliceSize)
+
+		// Process chunk
+		lines := strings.Split(string(chunk), "\n")
+		lines = lines[:len(lines)-1]
+		for _, line := range lines {
+			tmp := tempReading{}
+			var stationTemp string
+
+			tmp.station, stationTemp = getSplit(line)
+			tmp.hash = Hash(tmp.station)
+			tmp.temp = parseTemp(stationTemp)
+
+			tmpSlice = append(tmpSlice, tmp)
+		}
+
+		results <- tmpSlice
+	}
 }
 
-func (m *HashMap) Add(hash uint64, key string, measurement *measurement) *HashEntry {
-	entry := &HashEntry{
-		key:         []byte(key),
-		measurement: measurement,
+// resultsAggregator The resultsAggregator function's purpose is to aggreate results from the workers and compute them
+//
+//	into the measurements hashmap. The waitgroup is to signify that aggregation is complete and we can move forward with
+//	sorting the results.
+func resultsAggregator(wg *sync.WaitGroup, results <-chan []tempReading, resultsMap *HashMap, stationsOut chan<- []string) {
+	defer wg.Done()
+	stations := make([]string, 0, 500)
+
+	for tmpSlice := range results {
+		for _, tmp := range tmpSlice {
+			e := resultsMap.Get(tmp.hash, tmp.station)
+			if e == nil {
+				e = resultsMap.Add(tmp.hash, tmp.station, &measurement{min: tmp.temp, max: tmp.temp, sum: tmp.temp})
+				stations = append(stations, tmp.station)
+			} else {
+				e.measurement.min = min(e.measurement.min, tmp.temp)
+				e.measurement.max = max(e.measurement.max, tmp.temp)
+				e.measurement.sum += tmp.temp
+			}
+			e.measurement.count++
+		}
 	}
 
-	pos := hash % uint64(hashSize)
+	sort.Strings(stations)
+	stationsOut <- stations
+}
+
+func main() {
+	proffile, err := os.Create("./profile.prof")
+	if err != nil {
+		log.Fatal(err)
+	}
+	pprof.StartCPUProfile(proffile)
+	defer pprof.StopCPUProfile()
+
+	// Create the channels for the workers and aggregator.
+	chunks := make(chan []byte, chunkChannelSize)
+	results := make(chan []tempReading, resultChannelSize)
+	stationsIn := make(chan []string, 1)
+
+	// Create the worker pool
+	var workerWG sync.WaitGroup
+	workerWG.Add(workerPoolSize)
+
+	for i := 0; i < workerPoolSize; i++ {
+		go chunkWorker(&workerWG, chunks, results)
+	}
+
+	// once all workers are done, we close the results channel
+	go func() {
+		workerWG.Wait()
+		close(results)
+	}()
+
+	// Create the aggregator
+	resultsMap := NewHashMap()
+	var aggregatorWG sync.WaitGroup
+	aggregatorWG.Add(1)
+
+	go resultsAggregator(&aggregatorWG, results, resultsMap, stationsIn)
+
+	file, err := os.Open(filename)
+
+	if err != nil {
+		log.Fatalf("Failed to load file %s, err = %v\n", filename, err)
+		os.Exit(1)
+	}
+	defer file.Close()
+
+	const bufferSize = chunkSize * 1024 * 1024
+	buf := make([]byte, bufferSize)
+	leftover := make([]byte, 0, bufferSize)
+
+	// Start reading the file and chunking stuff up for workers to consume.
 	for {
-		if m.entries[pos] == nil {
+		nbChars, err := file.Read(buf)
+		if err != nil {
+			close(chunks)
 			break
 		}
-		pos++
-	}
-	m.entries[pos] = entry
-	return entry
-}
 
-func (m *HashMap) Get(hash uint64, key string) *HashEntry {
-	// Linear search on a key colission
-	pos := hash % uint64(hashSize)
-	for {
-		entry := m.entries[pos]
+		if nbChars > 0 {
+			validChunk, newLeftover := processChunk(buf, leftover, nbChars)
+			leftover = newLeftover
 
-		if entry != nil {
-			if string(entry.key) == key {
-				return entry
-
-			} else {
-				pos++
+			if len(validChunk) > 0 {
+				chunks <- validChunk
 			}
 		} else {
-			return entry
+			// Done creating chunks
+			fmt.Println("Done reading file...")
+			close(chunks)
+			break
+		}
+	}
+
+	// Wait until the aggregator is done processing results.
+	aggregatorWG.Wait()
+
+	// Sort stuff
+	stations := <-stationsIn
+
+	// Output stuff
+	fmt.Print("{\n")
+	nbKeys := len(stations) - 1
+	for i, k := range stations {
+		e := resultsMap.Get(Hash(k), k)
+
+		if i != nbKeys {
+			fmt.Printf("%s=%.1f/%.1f/%.1f, ", k, float64(e.measurement.min)/10, float64(e.measurement.sum)/float64(e.measurement.count)/10, float64(e.measurement.max)/10)
+		} else {
+			fmt.Printf("%s=%.1f/%.1f/%.1f}\n", k, float64(e.measurement.min)/10, float64(e.measurement.sum)/float64(e.measurement.count)/10, float64(e.measurement.max)/10)
 		}
 	}
 }
 
-type HashEntry struct {
-	key         []byte
-	measurement *measurement
-}
-
-func Hash(station string) uint64 {
-	hash := uint64(hashOffset)
-
-	for _, c := range station {
-		hash ^= uint64(c)
-		hash *= hashPrime
-	}
-
-	return hash
-}
-
-func GetSplit(line string) (string, string) {
+func getSplit(line string) (string, string) {
 	length := len(line)
 	if line[length-5] == ';' {
 		return line[:length-5], line[length-4:]
@@ -91,7 +188,7 @@ func GetSplit(line string) (string, string) {
 	return line[:length-6], line[length-5:]
 }
 
-func ParseTemp(temp string) int {
+func parseTemp(temp string) int {
 	length := len(temp)
 	sum := 0
 	factor := 1
@@ -146,79 +243,63 @@ func processChunk(chunk, prevLeftoverChunk []byte, chunkSize int) (completeChunk
 	return
 }
 
-func main() {
-	proffile, err := os.Create("./profile.prof")
-	if err != nil {
-		log.Fatal(err)
+// Hashmap stuff
+type HashEntry struct {
+	key         string
+	measurement *measurement
+}
+
+func Hash(station string) uint64 {
+	hash := uint64(hashOffset)
+
+	for _, c := range station {
+		hash ^= uint64(c)
+		hash *= hashPrime
 	}
-	pprof.StartCPUProfile(proffile)
-	defer pprof.StopCPUProfile()
 
-	filename := "measurements.txt"
-	file, err := os.Open(filename)
+	return hash
+}
 
-	if err != nil {
-		log.Fatalf("Failed to load file %s, err = %v\n", filename, err)
-		os.Exit(1)
+func NewHashMap() *HashMap {
+	return &HashMap{entries: make([]*HashEntry, hashSize)}
+}
+
+type HashMap struct {
+	entries []*HashEntry
+}
+
+func (m *HashMap) Add(hash uint64, key string, measurement *measurement) *HashEntry {
+	entry := &HashEntry{
+		key:         key,
+		measurement: measurement,
 	}
-	defer file.Close()
 
-	// Unfortunate but needed for sorting later.
-	results := NewHashMap()
-	stations := make([]string, 0, 500)
-
-	const bufferSize = 32 * 1024 * 1024
-	buf := make([]byte, bufferSize)
-	leftover := make([]byte, 0, bufferSize)
-
+	pos := hash % uint64(hashSize)
 	for {
-		nbChars, err := file.Read(buf)
-		if err != nil {
+		if m.entries[pos] == nil {
 			break
 		}
-
-		if nbChars > 0 {
-			validChunk, newLeftover := processChunk(buf, leftover, nbChars)
-			leftover = newLeftover
-
-			if len(validChunk) > 0 {
-				// Process chunk
-				lines := strings.Split(string(validChunk), "\n")
-				lines = lines[:len(lines)-1]
-				for _, line := range lines {
-					station, stationTemp := GetSplit(line)
-					stationHash := Hash(station)
-					temp := ParseTemp(stationTemp)
-
-					e := results.Get(stationHash, station)
-					if e == nil {
-						e = results.Add(stationHash, station, &measurement{min: temp, max: temp, sum: temp})
-						stations = append(stations, station)
-					} else {
-						e.measurement.min = min(e.measurement.min, temp)
-						e.measurement.max = max(e.measurement.max, temp)
-						e.measurement.sum += temp
-					}
-					e.measurement.count++
-				}
-			}
-		}
+		pos++
 	}
+	m.entries[pos] = entry
+	return entry
+}
 
-	// Sort stuff
-	// TODO: Find a way to append the hash to the station name so that we can pick it up and avoid hashing the name again.
-	sort.Strings(stations)
+func (m *HashMap) Get(hash uint64, key string) *HashEntry {
+	// Linear search on a key colission
+	pos := hash % uint64(hashSize)
+	for {
+		entry := m.entries[pos]
 
-	// Output stuff
-	fmt.Print("{")
-	nbKeys := len(stations) - 1
-	for i, k := range stations {
-		e := results.Get(Hash(k), k)
+		if entry != nil {
+			if string(entry.key) == key {
+				return entry
 
-		if i != nbKeys {
-			fmt.Printf("%s=%.1f/%.1f/%.1f, ", k, float64(e.measurement.min)/10, float64(e.measurement.sum)/float64(e.measurement.count)/10, float64(e.measurement.max)/10)
+			} else {
+				pos++
+			}
 		} else {
-			fmt.Printf("%s=%.1f/%.1f/%.1f}\n", k, float64(e.measurement.min)/10, float64(e.measurement.sum)/float64(e.measurement.count)/10, float64(e.measurement.max)/10)
+			return entry
 		}
 	}
 }
