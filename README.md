@@ -104,7 +104,7 @@ We will attack this in a future iteration.
 
 
 ## Iteration 4 (it4)
-Attaching the hashing problem, a basic hash table structure was created using a non cryptographic hashing fucntion:
+Attacking the hashing problem, a basic hash table structure was created using a non cryptographic hashing fucntion:
 [FNV-1a](https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function).
 
 This provided to be faster and a useful optimization, bringing the time down to a little less than 42seconds.
@@ -123,3 +123,71 @@ code to reduce the amount of hashing.
 A second iteration was run while hashing the string only once and to my surprise didn't bring any time improvement. We
 can see this on the flame graph below:
 ![Iteration 4-1 flame graph](/profiling/it4-1.svg)
+
+## Iteration 5 (it5)
+One last piece I'm interested in optimizing is the reading of the file. We're reading the file line by line and there is
+probably a better way to do this.
+
+Instead of reading the file line per line, I decided to go with reading large chunks of the file into a large memory
+buffer. This preallocated memory is then broken down into "valid" chunks, containing only full lines, and a "left over"
+chunk containing the tailing contents of the original large chunk. This is to be pre-pended to the next read chunk.
+
+I have also tried multiple buffer sizes to see how it affects performance. Let's have a look at the results.
+
+| Size   | Execucation time          |
+|--------|---------------------------|
+| 4Mb    | 36.210s, 37.111s, 37.912s |
+| 8Mb    | 34.502s, 36.030s, 35.907s |
+| 16Mb   | 33.496s, 34.093s, 33.988s |
+| 32Mb   | 32.186s, 32.884s, 33.896s |
+| 64Mb   | 32.160s, 32.554s, 32.958s |
+| 128Mb  | 31.626s, 32,436s, 32.531s |
+| 256Mb  | 34.067s, 32.634s, 33.858s |
+
+This is really interesting. The hypothesis for this is that smaller chunk sizes will require more iterations and memory
+allocations to get the work done. This creates more work for the garbage collector and it will hinder the application's
+performance. The other really interesting part is that we actually hit a minimum at 128Mb chunk sizes and performance
+decreases as we go for larger chunk sizes like 256Mb. We understand that reading larger chunks becomes less efficient.
+Let's look at flame graphs for the 4Mb, the 128Mb, and the 256Mb runs to try to understand these two observations.
+
+4Mb run
+![Iteration 5-4mb flame graph](/profiling/it5-4mb.svg)
+
+128Mb run
+![Iteration 5-128mb flame graph](/profiling/it5-128mb.svg)
+
+256Mb run
+![Iteration 5-256mb flame graph](/profiling/it5-256mb.svg)
+
+New development that I hadn't anticipated! I didn't notice the fact that the hashing function had some collisions. I
+assumed so because the output results didn't align with the results.txt that was generated with the original data set.
+Linear probing was implemented to solve this issue and avoid collisions in the hashing. The computed values are now 
+back to being accurate and align nicely with the reference output file.
+
+The nature of the linear probing added some extra computing cycles so let's see how this affected performance.
+
+| Size   | Execucation time          |
+|--------|---------------------------|
+| 4Mb    | 38.112s, 38.127s, 38.723s |
+| 8Mb    | 37.729s, 37.833s, 38.119s |
+| 16Mb   | 36.392s, 36.204s, 36.697s |
+| 32Mb   | 34.978s, 34.866s, 35.194s |
+| 64Mb   | 34.965s, 34.750s, 35.067s |
+| 128Mb  | 35.250s, 35.657s, 34.974s |
+| 256Mb  | 34.748s, 34.335s, 34.037s |
+| 512Mb  | 34.238s, 34.337s, 34.541s |
+
+This is interesting. The actual "best value" for the buffer size changed. Passed 32mb, there isn't much of a possitive 
+nor a negative impact on performance -- it pretty much flat lines. Let's see how the flame graph looks like now.
+
+32Mb run
+![Iteration 5-32mb flame graph](/profiling/it5-2-32.svg)
+
+Results are somewhat the same, but we are spending more time in the get function which is expected because of the linear
+probing. An other thing to note, I'm now using the Strings.Split function to split the strings. This is a bit
+"backwards" in the sense that we previously gotten rid of this for spliting temperatures and created out very own custom
+split function tailored specifically to our usecase because it was predictable: temperatures are either 4, 5, or 6
+characters in length, 5 being the most common one. Since the names of the stations are arbitrary, it will be difficult 
+to gain much from writting our own custom split function, I think.
+
+Next step, would be to parallelize the code and make it function on multiple cores.
