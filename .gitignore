@@ -27,3 +27,5 @@ results.txt
 result-small.txt
 main
 
+profiling/flamegraph.pl
+profiling/stackcollapse-go.pl

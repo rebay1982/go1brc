@@ -191,3 +191,73 @@ characters in length, 5 being the most common one. Since the names of the statio
 to gain much from writting our own custom split function, I think.
 
 Next step, would be to parallelize the code and make it function on multiple cores.
+
+## Iteration 6 (it6)
+In iteration 6, we will be leveraging channels and go routines to parallelize the work. A worker pool model would be
+suitable. It's not possible to read the file in parallel but it will be possible to send off the processing of chunks
+to workers to extract the lines from the chunk, compute the temperature, and generate a temperature reading. Since we're
+using a hash map to store the final temperature readings, we cannot write to it in parallel (the code that was build in
+iteration 4 did not take into account concurrency. We will fan out the processing and fan in the results from the
+workers and have a single aggregator function do the final assembly of the data.
+
+Initially, the implementation was quite naive. The worker receives a chunk that contains a potential of tens of
+thousands of potential lines. For every line, parse, retrieve the temperature reading, and send the reading to the
+aggregator. This looks fine on paper but the results were disheartening considering how far we've come. The computation,
+with a pool of 4 workers, took 1m37s. Isn't this supposed to be faster since we're running the processing on multiple
+cores? We're back to square one.
+
+This is what the flame graph showed:
+![Iteration 6-1 flame graph](/profiling/it6-1.svg)
+
+We can see that the `chunkWorker` spends a large amount of its time in the `chansend1` function. This is in fact the
+runtime function used for sending things across channels. This is where it dawned on me that we're essentially sending
+the 1 billion rows over a channel towards the aggregator function. We can try to minimize this by sending slices of
+temperature readings, which would reduce the amount of sends we're making. Something to note about slices, the
+underlying array in the slice doesn't get duplicated when it's sent over a channel, only the basic structure containing
+the length and capacity information of the slice gets duplicated.
+
+This proved to be the correct assumption. By simply accumulating all the temperature readings from a chunk and send them
+in a slice to the aggregator only once the worker is done processing the whole chunk reduced to processing time to
+around 25s. This is an improvement of 10s over iteration 5.
+
+This greatly reduced the time spent in that function which heavily reduced the processing time for the billion rows.
+![Iteration 6 flame graph](/profiling/it6.svg)
+
+The rest of the work resides in optimizating multiple parameters in order to speed things up. This included the number
+of cores -- the sweetspot that was settled on is 12 (although my laptop has 16). The next piece of optimization was
+finding the right size for the slice of temperature readings to collect the results and send them to the aggregator
+through the channel.
+
+The objective was striking a balance between spending time allocating memory for the slice and spending time "growing"
+the slice if it was too small to accomodate all the temperature readings from a single chunk. Using 1Mb chunks read from
+the file and computing the number of lines found per chunk, allocating a slice of 80k would suffice for 93% of chunks.
+Other odd cases (without looking into the file, assuming station names were shorter), the number of lines extended to
+150k per chunk, and sometimes 220k per chunk. In the 7% odd cases, a doubling of the capacity would happ en. For the
+even rarer cases of 220k, a second doubling would be necessary. Essentially, in the worst case, we would have to double
+the size of the slice twice, but that only happened in < 1% cases. An acceptable compromise.
+
+Allocating an arbitrarily large chunk of memory would take more time and be wastefull. It also require more time from
+the garbage collector to clean up the memory when we're done with the temperature result slice.
+
+With the final tweaking, landing on 12 cores, using a chunk size of 1mb, and a temperature reading slice of 80k, here is
+the fastest resule my personal laptop (i7 12th gen with 16 cores and 32GBs of RAM) was able to pull off:
+
+```
+real    0m13.873s
+user    1m23.869s
+sys     0m4.925s
+```
+
+Not too shabby, under 15 seconds.
+
+## Conclusion / Final Thoughts
+This was fun. This project was started some time in February, after the official bilion row challenge had ended. Working
+on it in an off and on fashion, it took the better part of a few months to get a functional implementation running in
+under the 15 second objective.
+
+If we look at the last flame graph in iteration 6, we do see that the `runtime.gcBgMarkWorker` takes a good amount of
+time (close to 27%) so that would be the next focus for optimizing: Tweaking garbage collection and memory allocation.
+
+This can, and will, be an other rabbit hole to go down in but will be tackled at an other time. For now, the initial
+objective has been reached and a lot of interesting things were learned along the way. It is time to set this project
+aside and move on to explore and learn new things.
